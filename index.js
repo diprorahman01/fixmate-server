@@ -3,21 +3,37 @@ import express from "express";
 import cors from "cors";
 import "dotenv/config";
 import dns from "node:dns";
+
 import { MongoClient, ObjectId } from "mongodb";
+
+import {
+  createAuthMiddlewares,
+} from "./middleware/auth.js";
 
 // ==========================================
 // EXPRESS SETUP
 // ==========================================
 
 const app = express();
+
 const port = process.env.PORT || 5000;
 
-// Middleware
+// ==========================================
+// EXPRESS MIDDLEWARES
+// ==========================================
+
 app.use(express.json());
+
+const allowedOrigins = (
+  process.env.CLIENT_URL || "http://localhost:3000"
+)
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:3000",
+    origin: allowedOrigins,
     credentials: true,
   })
 );
@@ -26,35 +42,60 @@ app.use(
 // MONGODB CONNECTION
 // ==========================================
 
-// MongoDB connection string from .env
 const uri = process.env.MONGODB_URI;
 
 if (!uri) {
-  console.error("MONGODB_URI is missing in .env");
+  console.error(
+    "MONGODB_URI is missing in .env"
+  );
+
   process.exit(1);
 }
 
-// DNS workaround for the previous SRV error.
-// This can be disabled later if your default
-// DNS resolver starts working correctly.
+// The DNS workaround previously needed
+// for your MongoDB Atlas connection.
 dns.setServers(["1.1.1.1"]);
 
-// Create MongoDB client - IMPORTANT FIX
+// Create MongoDB client.
 const client = new MongoClient(uri);
 
-// Select FixMate database
+// Select database.
 const database = client.db(
   process.env.DB_NAME || "fixmatedb"
 );
 
-// MongoDB collections
-const usersCollection = database.collection("user");
+// ==========================================
+// MONGODB COLLECTIONS
+// ==========================================
 
-const servicesCollection = database.collection("services");
+// Better Auth's user collection.
+const usersCollection =
+  database.collection("user");
 
-// These collections will be used in later sessions.
-// const bookingsCollection = database.collection("bookings");
-// const paymentsCollection = database.collection("payments");
+// Technician repair services.
+const servicesCollection =
+  database.collection("services");
+
+// These collections will be used when
+// implementing bookings and payments.
+// const bookingsCollection =
+//   database.collection("bookings");
+
+// const paymentsCollection =
+//   database.collection("payments");
+
+// ==========================================
+// JWT AUTHENTICATION MIDDLEWARES
+// ==========================================
+
+const {
+  verifyToken,
+  verifyCustomer,
+  verifyTechnician,
+  verifyAdmin,
+} = createAuthMiddlewares(
+  usersCollection
+);
 
 // ==========================================
 // FIXMATE SERVICE CATEGORIES
@@ -70,6 +111,10 @@ const categories = [
   "Electrical",
 ];
 
+// ==========================================
+// FIXMATE SERVICE MODES
+// ==========================================
+
 const serviceModes = [
   "Home Visit",
   "Shop Drop-off",
@@ -79,12 +124,17 @@ const serviceModes = [
 // HELPER FUNCTIONS
 // ==========================================
 
-// Escape special regex characters in search text.
+// Escape special characters in search
+// text before creating a MongoDB regex.
 const escapeRegex = (text) => {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
 };
 
-// Convert MongoDB ObjectId into a string.
+// Convert MongoDB ObjectId to a string
+// for the Next.js frontend.
 const formatService = (service) => {
   return {
     ...service,
@@ -97,7 +147,9 @@ const formatService = (service) => {
 // ==========================================
 
 app.get("/", (req, res) => {
-  res.send("FixMate server is running!");
+  res.send(
+    "FixMate server is running!"
+  );
 });
 
 // ==========================================
@@ -106,17 +158,22 @@ app.get("/", (req, res) => {
 
 app.get("/api/health", async (req, res) => {
   try {
-    await database.command({ ping: 1 });
+    await database.command({
+      ping: 1,
+    });
 
-    res.status(200).send({
+    return res.status(200).send({
       success: true,
       message: "FixMate API is healthy",
       database: "connected",
     });
   } catch (error) {
-    console.error("Health check error:", error);
+    console.error(
+      "Health check error:",
+      error
+    );
 
-    res.status(500).send({
+    return res.status(500).send({
       success: false,
       message: "MongoDB connection failed",
     });
@@ -129,7 +186,7 @@ app.get("/api/health", async (req, res) => {
 //
 // GET /api/services
 //
-// Supported query parameters:
+// Supports:
 // search
 // category
 // serviceMode
@@ -137,7 +194,7 @@ app.get("/api/health", async (req, res) => {
 // limit
 //
 // Only approved and available services
-// are visible to public users.
+// can appear publicly.
 // ==========================================
 
 app.get("/api/services", async (req, res) => {
@@ -150,7 +207,10 @@ app.get("/api/services", async (req, res) => {
       limit,
     } = req.query;
 
-    // Validate query parameters.
+    // ======================================
+    // VALIDATE QUERY PARAMETERS
+    // ======================================
+
     if (
       typeof search !== "string" ||
       typeof category !== "string" ||
@@ -163,7 +223,6 @@ app.get("/api/services", async (req, res) => {
       });
     }
 
-    // Limit search length.
     if (search.length > 100) {
       return res.status(400).send({
         success: false,
@@ -171,15 +230,16 @@ app.get("/api/services", async (req, res) => {
       });
     }
 
-    // Validate category.
-    if (category && !categories.includes(category)) {
+    if (
+      category &&
+      !categories.includes(category)
+    ) {
       return res.status(400).send({
         success: false,
         message: "Invalid service category",
       });
     }
 
-    // Validate service mode.
     if (
       serviceMode &&
       !serviceModes.includes(serviceMode)
@@ -190,29 +250,38 @@ app.get("/api/services", async (req, res) => {
       });
     }
 
-    // Validate sorting.
     const allowedSortOptions = [
       "newest",
       "price-asc",
       "price-desc",
     ];
 
-    if (!allowedSortOptions.includes(sort)) {
+    if (
+      !allowedSortOptions.includes(sort)
+    ) {
       return res.status(400).send({
         success: false,
         message: "Invalid sort option",
       });
     }
 
-    // Public services query.
+    // ======================================
+    // PUBLIC SERVICE VISIBILITY
+    // ======================================
+
     const query = {
       approvalStatus: "approved",
       isAvailable: true,
     };
 
-    // Search by title or category.
+    // ======================================
+    // SEARCH BY TITLE OR CATEGORY
+    // ======================================
+
     if (search.trim()) {
-      const safeSearch = escapeRegex(search.trim());
+      const safeSearch = escapeRegex(
+        search.trim()
+      );
 
       query.$or = [
         {
@@ -230,17 +299,26 @@ app.get("/api/services", async (req, res) => {
       ];
     }
 
-    // Filter by category.
+    // ======================================
+    // CATEGORY FILTER
+    // ======================================
+
     if (category) {
       query.category = category;
     }
 
-    // Filter by service mode.
+    // ======================================
+    // SERVICE MODE FILTER
+    // ======================================
+
     if (serviceMode) {
       query.serviceMode = serviceMode;
     }
 
-    // Sort using MongoDB.
+    // ======================================
+    // SORTING
+    // ======================================
+
     let sortOptions = {
       createdAt: -1,
       _id: -1,
@@ -260,12 +338,18 @@ app.get("/api/services", async (req, res) => {
       };
     }
 
-    // Build MongoDB query.
+    // ======================================
+    // MONGODB QUERY
+    // ======================================
+
     let cursor = servicesCollection
       .find(query)
       .sort(sortOptions);
 
-    // Optional result limit (homepage uses 6).
+    // ======================================
+    // OPTIONAL RESULT LIMIT
+    // ======================================
+
     if (limit !== undefined) {
       if (typeof limit !== "string") {
         return res.status(400).send({
@@ -283,23 +367,33 @@ app.get("/api/services", async (req, res) => {
       ) {
         return res.status(400).send({
           success: false,
-          message: "Limit must be between 1 and 100",
+          message:
+            "Limit must be between 1 and 100",
         });
       }
 
-      cursor = cursor.limit(parsedLimit);
+      cursor = cursor.limit(
+        parsedLimit
+      );
     }
 
-    // Fetch MongoDB documents.
-    const result = await cursor.toArray();
+    // ======================================
+    // FETCH SERVICES
+    // ======================================
 
-    // Keep array response compatible with
-    // the existing Next.js getServices() helper.
-    res.status(200).send(result.map(formatService));
+    const result =
+      await cursor.toArray();
+
+    return res.status(200).send(
+      result.map(formatService)
+    );
   } catch (error) {
-    console.error("Services API error:", error);
+    console.error(
+      "Services API error:",
+      error
+    );
 
-    res.status(500).send({
+    return res.status(500).send({
       success: false,
       message: "Failed to load services",
     });
@@ -312,98 +406,250 @@ app.get("/api/services", async (req, res) => {
 //
 // GET /api/services/:id
 //
-// Only an approved and available service
-// can be viewed publicly.
+// Approved and available services only.
 // ==========================================
 
-app.get("/api/services/:id", async (req, res) => {
-  try {
-    const id = req.params.id;
+app.get(
+  "/api/services/:id",
+  async (req, res) => {
+    try {
+      const id = req.params.id;
 
-    // Validate MongoDB ObjectId.
-    if (
-      typeof id !== "string" ||
-      !/^[0-9a-fA-F]{24}$/.test(id)
-    ) {
-      return res.status(404).send({
-        success: false,
-        message: "Service not found",
-      });
-    }
+      // ====================================
+      // VALIDATE OBJECT ID
+      // ====================================
 
-    const query = {
-      _id: new ObjectId(id),
-      approvalStatus: "approved",
-      isAvailable: true,
-    };
-
-    const service = await servicesCollection.findOne(query);
-
-    if (!service) {
-      return res.status(404).send({
-        success: false,
-        message: "Service not found",
-      });
-    }
-
-    // Find the technician's public profile.
-    const technician = await usersCollection.findOne(
-      {
-        email: service.technicianEmail,
-        role: "technician",
-      },
-      {
-        projection: {
-          _id: 0,
-          name: 1,
-          image: 1,
-          area: 1,
-          bio: 1,
-        },
+      if (
+        typeof id !== "string" ||
+        !/^[0-9a-fA-F]{24}$/.test(id)
+      ) {
+        return res.status(404).send({
+          success: false,
+          message: "Service not found",
+        });
       }
-    );
 
-    res.status(200).send({
-      ...formatService(service),
-      technician: technician || null,
-    });
-  } catch (error) {
-    console.error("Service details error:", error);
+      // ====================================
+      // FIND APPROVED SERVICE
+      // ====================================
 
-    res.status(500).send({
-      success: false,
-      message: "Failed to load service details",
+      const query = {
+        _id: new ObjectId(id),
+        approvalStatus: "approved",
+        isAvailable: true,
+      };
+
+      const service =
+        await servicesCollection.findOne(
+          query
+        );
+
+      if (!service) {
+        return res.status(404).send({
+          success: false,
+          message: "Service not found",
+        });
+      }
+
+      // ====================================
+      // TECHNICIAN PUBLIC PROFILE
+      // ====================================
+
+      const technician =
+        await usersCollection.findOne(
+          {
+            email:
+              service.technicianEmail,
+            role: "technician",
+          },
+          {
+            projection: {
+              _id: 0,
+              name: 1,
+              image: 1,
+              area: 1,
+              bio: 1,
+            },
+          }
+        );
+
+      return res.status(200).send({
+        ...formatService(service),
+        technician: technician || null,
+      });
+    } catch (error) {
+      console.error(
+        "Service details error:",
+        error
+      );
+
+      return res.status(500).send({
+        success: false,
+        message:
+          "Failed to load service details",
+      });
+    }
+  }
+);
+
+// ==========================================
+// AUTHENTICATED USER API
+// ==========================================
+//
+// GET /api/auth/me
+//
+// Requires a valid JWT.
+// ==========================================
+
+app.get(
+  "/api/auth/me",
+  verifyToken,
+  (req, res) => {
+    return res.status(200).send({
+      success: true,
+      message:
+        "Authenticated user verified",
+      user: req.user,
     });
   }
-});
+);
+
+// ==========================================
+// CUSTOMER-ONLY TEST API
+// ==========================================
+//
+// GET /api/test/customer
+//
+// Requires:
+// verifyToken
+// verifyCustomer
+// ==========================================
+
+app.get(
+  "/api/test/customer",
+  verifyToken,
+  verifyCustomer,
+  (req, res) => {
+    return res.status(200).send({
+      success: true,
+      message:
+        "Customer access granted",
+      user: req.user,
+    });
+  }
+);
+
+// ==========================================
+// TECHNICIAN-ONLY TEST API
+// ==========================================
+//
+// GET /api/test/technician
+//
+// Requires:
+// verifyToken
+// verifyTechnician
+// ==========================================
+
+app.get(
+  "/api/test/technician",
+  verifyToken,
+  verifyTechnician,
+  (req, res) => {
+    return res.status(200).send({
+      success: true,
+      message:
+        "Technician access granted",
+      user: req.user,
+    });
+  }
+);
+
+// ==========================================
+// ADMIN-ONLY TEST API
+// ==========================================
+//
+// GET /api/test/admin
+//
+// Requires:
+// verifyToken
+// verifyAdmin
+// ==========================================
+
+app.get(
+  "/api/test/admin",
+  verifyToken,
+  verifyAdmin,
+  (req, res) => {
+    return res.status(200).send({
+      success: true,
+      message:
+        "Admin access granted",
+      user: req.user,
+    });
+  }
+);
 
 // ==========================================
 // UNKNOWN ROUTES
 // ==========================================
 
 app.use((req, res) => {
-  res.status(404).send({
+  return res.status(404).send({
     success: false,
     message: "API route not found",
   });
 });
 
 // ==========================================
-// CONNECT MONGODB AND START EXPRESS
+// CENTRAL ERROR HANDLER
+// ==========================================
+
+app.use((error, req, res, next) => {
+  console.error(
+    "Server error:",
+    error
+  );
+
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  return res.status(500).send({
+    success: false,
+    message: "Internal server error",
+  });
+});
+
+// ==========================================
+// CONNECT MONGODB AND START SERVER
 // ==========================================
 
 async function run() {
   try {
-    // Establish MongoDB connection.
+    // ======================================
+    // CONNECT DATABASE
+    // ======================================
+
     await client.connect();
 
-    // Verify connection.
-    await database.command({ ping: 1 });
+    // Check MongoDB connection.
+    await database.command({
+      ping: 1,
+    });
 
-    console.log("Successfully connected to MongoDB!");
-    console.log("Database:", database.databaseName);
+    console.log(
+      "Successfully connected to MongoDB!"
+    );
 
-    // Create indexes for services.
+    console.log(
+      "Database:",
+      database.databaseName
+    );
+
+    // ======================================
+    // MONGODB INDEXES
+    // ======================================
+
     await servicesCollection.createIndex({
       approvalStatus: 1,
       isAvailable: 1,
@@ -419,7 +665,10 @@ async function run() {
       technicianEmail: 1,
     });
 
-    // Start server only after MongoDB connects.
+    // ======================================
+    // START EXPRESS SERVER
+    // ======================================
+
     app.listen(port, () => {
       console.log(
         `FixMate server running at http://localhost:${port}`
@@ -434,5 +683,9 @@ async function run() {
     process.exit(1);
   }
 }
+
+// ==========================================
+// RUN SERVER
+// ==========================================
 
 run();
