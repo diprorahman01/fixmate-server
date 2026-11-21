@@ -11,6 +11,10 @@ import {
 } from "./routes/services.js";
 
 import {
+  createAdminRouter,
+} from "./routes/admin.js";
+
+import {
   createAuthMiddlewares,
 } from "./middleware/auth.js";
 
@@ -99,6 +103,20 @@ const {
   verifyAdmin,
 } = createAuthMiddlewares(
   usersCollection
+);
+
+// ==========================================
+// ADMIN MANAGEMENT ROUTES
+// ==========================================
+
+app.use(
+  "/api/admin",
+  createAdminRouter({
+    usersCollection,
+    servicesCollection,
+    verifyToken,
+    verifyAdmin,
+  })
 );
 
 // ==========================================
