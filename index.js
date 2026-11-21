@@ -73,7 +73,7 @@ if (!uri) {
 }
 
 // MongoDB Atlas DNS workaround.
-dns.setServers(["1.1.1.1"]);
+dns.setServers(["8.8.8.8"]);
 
 // Create MongoDB client.
 const client = new MongoClient(uri);
