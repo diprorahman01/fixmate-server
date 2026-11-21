@@ -3,17 +3,11 @@ import express from "express";
 import cors from "cors";
 import "dotenv/config";
 import dns from "node:dns";
-
 import { MongoClient, ObjectId } from "mongodb";
+
 import { createProfileRouter } from "./routes/profile.js";
-
-import {
-  createServiceRouter,
-} from "./routes/services.js";
-
-import {
-  createAdminRouter,
-} from "./routes/admin.js";
+import { createServiceRouter } from "./routes/services.js";
+import { createAdminRouter } from "./routes/admin.js";
 
 import {
   createPaymentRouter,
@@ -30,18 +24,17 @@ import {
 } from "./routes/bookings.js";
 
 // ==========================================
-// EXPRESS SETUP
+// FIXMATE EXPRESS SERVER
 // ==========================================
 
 const app = express();
-
 const port = process.env.PORT || 5000;
 
 // ==========================================
 // EXPRESS MIDDLEWARES
 // ==========================================
 
-// Session 9 profile photo uploads use base64 JSON (up to 5 MB decoded).
+// Allow larger JSON payloads for profile images.
 app.use(express.json({ limit: "10mb" }));
 
 const allowedOrigins = (
@@ -65,20 +58,15 @@ app.use(
 const uri = process.env.MONGODB_URI;
 
 if (!uri) {
-  console.error(
-    "MONGODB_URI is missing in .env"
-  );
-
+  console.error("MONGODB_URI is missing in .env");
   process.exit(1);
 }
 
-// MongoDB Atlas DNS workaround.
+// Keep the DNS configuration from your file.
 dns.setServers(["8.8.8.8"]);
 
-// Create MongoDB client.
 const client = new MongoClient(uri);
 
-// Select database.
 const database = client.db(
   process.env.DB_NAME || "fixmatedb"
 );
@@ -87,21 +75,14 @@ const database = client.db(
 // MONGODB COLLECTIONS
 // ==========================================
 
-// Better Auth users.
 const usersCollection =
   database.collection("user");
 
-// Technician repair services.
 const servicesCollection =
   database.collection("services");
 
-// Session 7: Customer repair bookings.
 const bookingsCollection =
   database.collection("bookings");
-
-// ==========================================
-// SESSION 8: STRIPE PAYMENTS COLLECTION
-// ==========================================
 
 const paymentsCollection =
   database.collection("payments");
@@ -115,12 +96,10 @@ const {
   verifyCustomer,
   verifyTechnician,
   verifyAdmin,
-} = createAuthMiddlewares(
-  usersCollection
-);
+} = createAuthMiddlewares(usersCollection);
 
 // ==========================================
-// FIXMATE SERVICE CATEGORIES
+// SERVICE CATEGORIES
 // ==========================================
 
 const categories = [
@@ -134,7 +113,7 @@ const categories = [
 ];
 
 // ==========================================
-// FIXMATE SERVICE MODES
+// SERVICE MODES
 // ==========================================
 
 const serviceModes = [
@@ -146,28 +125,28 @@ const serviceModes = [
 // HELPER FUNCTIONS
 // ==========================================
 
-// Escape special characters in search text.
-const escapeRegex = (text) => {
+// Escape regular-expression special characters.
+function escapeRegex(text) {
   return text.replace(
     /[.*+?^${}()|[\]\\]/g,
     "\\$&"
   );
-};
+}
 
 // Convert MongoDB ObjectId to string.
-const formatService = (service) => {
+function formatService(service) {
   return {
     ...service,
     _id: service._id.toString(),
   };
-};
+}
 
 // ==========================================
-// DEFAULT API
+// DEFAULT SERVER API
 // ==========================================
 
 app.get("/", (req, res) => {
-  res.send("FixMate server is running!");
+  return res.send("FixMate server is running!");
 });
 
 // ==========================================
@@ -176,9 +155,7 @@ app.get("/", (req, res) => {
 
 app.get("/api/health", async (req, res) => {
   try {
-    await database.command({
-      ping: 1,
-    });
+    await database.command({ ping: 1 });
 
     return res.status(200).send({
       success: true,
@@ -186,10 +163,7 @@ app.get("/api/health", async (req, res) => {
       database: "connected",
     });
   } catch (error) {
-    console.error(
-      "Health check error:",
-      error
-    );
+    console.error("Health check error:", error);
 
     return res.status(500).send({
       success: false,
@@ -199,7 +173,7 @@ app.get("/api/health", async (req, res) => {
 });
 
 // ==========================================
-// GET ALL PUBLIC SERVICES
+// PUBLIC SERVICES API
 // ==========================================
 //
 // GET /api/services
@@ -210,8 +184,30 @@ app.get("/api/health", async (req, res) => {
 // serviceMode
 // sort
 // limit
+// page
 //
-// Only approved and available services.
+// Search, filtering, sorting and pagination
+// are performed on the MongoDB server.
+//
+// Only approved and available services
+// are returned.
+//
+// IMPORTANT:
+//
+// Requests WITH a page parameter return:
+// {
+//   services: [],
+//   total: 0,
+//   page: 1,
+//   limit: 12,
+//   totalPages: 1,
+//   hasNextPage: false,
+//   hasPreviousPage: false
+// }
+//
+// Requests WITHOUT a page parameter return
+// an array for backward compatibility.
+//
 // ==========================================
 
 app.get("/api/services", async (req, res) => {
@@ -222,9 +218,13 @@ app.get("/api/services", async (req, res) => {
       serviceMode = "",
       sort = "newest",
       limit,
+      page,
     } = req.query;
 
-    // Validate query parameters.
+    // ======================================
+    // STEP 1: VALIDATE QUERY PARAMETERS
+    // ======================================
+
     if (
       typeof search !== "string" ||
       typeof category !== "string" ||
@@ -277,13 +277,16 @@ app.get("/api/services", async (req, res) => {
       });
     }
 
-    // Only public approved services.
+    // ======================================
+    // STEP 2: BUILD MONGODB FILTER
+    // ======================================
+
     const query = {
       approvalStatus: "approved",
       isAvailable: true,
     };
 
-    // Search title or category.
+    // Search by service title or category.
     if (search.trim()) {
       const safeSearch = escapeRegex(
         search.trim()
@@ -305,17 +308,20 @@ app.get("/api/services", async (req, res) => {
       ];
     }
 
-    // Category filter.
+    // Category filtering.
     if (category) {
       query.category = category;
     }
 
-    // Service mode filter.
+    // Service mode filtering.
     if (serviceMode) {
       query.serviceMode = serviceMode;
     }
 
-    // MongoDB sorting.
+    // ======================================
+    // STEP 3: SERVER-SIDE SORTING
+    // ======================================
+
     let sortOptions = {
       createdAt: -1,
       _id: -1,
@@ -335,25 +341,29 @@ app.get("/api/services", async (req, res) => {
       };
     }
 
-    let cursor = servicesCollection
-      .find(query)
-      .sort(sortOptions);
+    // ======================================
+    // STEP 4: VALIDATE LIMIT
+    // ======================================
 
-    // Optional result limit.
+    let pageSize = 12;
+
     if (limit !== undefined) {
-      if (typeof limit !== "string") {
+      if (
+        typeof limit !== "string" ||
+        !/^[1-9]\d*$/.test(limit)
+      ) {
         return res.status(400).send({
           success: false,
           message: "Invalid limit",
         });
       }
 
-      const parsedLimit = Number(limit);
+      pageSize = Number(limit);
 
       if (
-        !Number.isInteger(parsedLimit) ||
-        parsedLimit < 1 ||
-        parsedLimit > 100
+        !Number.isInteger(pageSize) ||
+        pageSize < 1 ||
+        pageSize > 100
       ) {
         return res.status(400).send({
           success: false,
@@ -361,20 +371,123 @@ app.get("/api/services", async (req, res) => {
             "Limit must be between 1 and 100",
         });
       }
-
-      cursor = cursor.limit(parsedLimit);
     }
 
-    const result = await cursor.toArray();
+    // ======================================
+    // STEP 5: VALIDATE PAGE NUMBER
+    // ======================================
+
+    const usePagination = page !== undefined;
+    let pageNumber = 1;
+
+    if (usePagination) {
+      if (
+        typeof page !== "string" ||
+        !/^[1-9]\d*$/.test(page)
+      ) {
+        return res.status(400).send({
+          success: false,
+          message: "Invalid page number",
+        });
+      }
+
+      pageNumber = Number(page);
+
+      if (
+        !Number.isSafeInteger(pageNumber) ||
+        pageNumber < 1 ||
+        pageNumber > 10000
+      ) {
+        return res.status(400).send({
+          success: false,
+          message:
+            "Page must be between 1 and 10000",
+        });
+      }
+    }
+
+    // ======================================
+    // STEP 6: MONGODB PAGINATION
+    // ======================================
+    //
+    // Pagination is enabled when the Client
+    // provides the page parameter.
+    //
+    // Example:
+    // /api/services?page=1&limit=12
+    //
+    // MongoDB performs:
+    // find()
+    // sort()
+    // skip()
+    // limit()
+    //
+    // ======================================
+
+    if (usePagination) {
+      const total =
+        await servicesCollection.countDocuments(
+          query
+        );
+
+      const totalPages = Math.max(
+        1,
+        Math.ceil(total / pageSize)
+      );
+
+      const skip = (pageNumber - 1) * pageSize;
+
+      const services = await servicesCollection
+        .find(query)
+        .sort(sortOptions)
+        .skip(skip)
+        .limit(pageSize)
+        .toArray();
+
+      return res.status(200).send({
+        services: services.map(formatService),
+
+        total,
+
+        page: pageNumber,
+
+        limit: pageSize,
+
+        totalPages,
+
+        hasNextPage: pageNumber < totalPages,
+
+        hasPreviousPage: pageNumber > 1,
+      });
+    }
+
+    // ======================================
+    // STEP 7: BACKWARD COMPATIBILITY
+    // ======================================
+    //
+    // The homepage and older components
+    // may call /api/services without page.
+    //
+    // Keep returning an array for those
+    // components so they do not break.
+    //
+    // ======================================
+
+    let cursor = servicesCollection
+      .find(query)
+      .sort(sortOptions);
+
+    if (limit !== undefined) {
+      cursor = cursor.limit(pageSize);
+    }
+
+    const services = await cursor.toArray();
 
     return res.status(200).send(
-      result.map(formatService)
+      services.map(formatService)
     );
   } catch (error) {
-    console.error(
-      "Services API error:",
-      error
-    );
+    console.error("Services API error:", error);
 
     return res.status(500).send({
       success: false,
@@ -388,79 +501,75 @@ app.get("/api/services", async (req, res) => {
 // ==========================================
 //
 // GET /api/services/:id
+//
+// Only approved and available services.
 // ==========================================
 
-app.get(
-  "/api/services/:id",
-  async (req, res) => {
-    try {
-      const id = req.params.id;
+app.get("/api/services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
 
-      if (
-        typeof id !== "string" ||
-        !/^[0-9a-fA-F]{24}$/.test(id)
-      ) {
-        return res.status(404).send({
-          success: false,
-          message: "Service not found",
-        });
-      }
-
-      const query = {
-        _id: new ObjectId(id),
-        approvalStatus: "approved",
-        isAvailable: true,
-      };
-
-      const service =
-        await servicesCollection.findOne(
-          query
-        );
-
-      if (!service) {
-        return res.status(404).send({
-          success: false,
-          message: "Service not found",
-        });
-      }
-
-      // Find public technician profile.
-      const technician =
-        await usersCollection.findOne(
-          {
-            email:
-              service.technicianEmail,
-            role: "technician",
-          },
-          {
-            projection: {
-              _id: 0,
-              name: 1,
-              image: 1,
-              area: 1,
-              bio: 1,
-            },
-          }
-        );
-
-      return res.status(200).send({
-        ...formatService(service),
-        technician: technician || null,
-      });
-    } catch (error) {
-      console.error(
-        "Service details error:",
-        error
-      );
-
-      return res.status(500).send({
+    if (
+      typeof id !== "string" ||
+      !/^[0-9a-fA-F]{24}$/.test(id)
+    ) {
+      return res.status(404).send({
         success: false,
-        message:
-          "Failed to load service details",
+        message: "Service not found",
       });
     }
+
+    const query = {
+      _id: new ObjectId(id),
+      approvalStatus: "approved",
+      isAvailable: true,
+    };
+
+    const service =
+      await servicesCollection.findOne(query);
+
+    if (!service) {
+      return res.status(404).send({
+        success: false,
+        message: "Service not found",
+      });
+    }
+
+    // Public technician information.
+    const technician =
+      await usersCollection.findOne(
+        {
+          email: service.technicianEmail,
+          role: "technician",
+        },
+        {
+          projection: {
+            _id: 0,
+            name: 1,
+            image: 1,
+            area: 1,
+            bio: 1,
+          },
+        }
+      );
+
+    return res.status(200).send({
+      ...formatService(service),
+      technician: technician || null,
+    });
+  } catch (error) {
+    console.error(
+      "Service details error:",
+      error
+    );
+
+    return res.status(500).send({
+      success: false,
+      message:
+        "Failed to load service details",
+    });
   }
-);
+});
 
 // ==========================================
 // AUTHENTICATED USER API
@@ -475,8 +584,7 @@ app.get(
   (req, res) => {
     return res.status(200).send({
       success: true,
-      message:
-        "Authenticated user verified",
+      message: "Authenticated user verified",
       user: req.user,
     });
   }
@@ -534,24 +642,29 @@ app.get(
 );
 
 // ==========================================
-// PROTECTED ROUTERS — EXACT ROUTE SCOPING
+// PROTECTED ROUTE MOUNTING HELPER
 // ==========================================
-// These routers contain router.use(verifyToken) and some
-// also router.use(verifyTechnician / verifyAdmin).
-// A router mounted on all /api paths otherwise rejects
-// unrelated requests before the next router can run.
-// Only pass the router its own supported path + method.
+//
+// Route matching is restricted so one
+// router cannot accidentally reject
+// requests belonging to another router.
+//
+// ==========================================
 
 function mountOnly(base, router, accepts) {
   app.use(base, (req, res, next) => {
     if (!accepts(req.method, req.path)) {
       return next();
     }
+
     return router(req, res, next);
   });
 }
 
-// Session 5: technician service operations.
+// ==========================================
+// SESSION 5: TECHNICIAN SERVICES
+// ==========================================
+
 mountOnly(
   "/api",
   createServiceRouter({
@@ -560,14 +673,28 @@ mountOnly(
     verifyTechnician,
   }),
   (method, path) =>
-    (method === "GET" && /^\/technician\/services(?:\/[^/]+)?$/.test(path)) ||
-    (method === "POST" && path === "/services") ||
-    (["PATCH", "DELETE"].includes(method) &&
-      /^\/services\/[^/]+(?:\/availability)?$/.test(path))
+    (
+      method === "GET" &&
+      /^\/technician\/services(?:\/[^/]+)?$/.test(
+        path
+      )
+    ) ||
+    (
+      method === "POST" &&
+      path === "/services"
+    ) ||
+    (
+      ["PATCH", "DELETE"].includes(method) &&
+      /^\/services\/[^/]+(?:\/availability)?$/.test(
+        path
+      )
+    )
 );
 
-// Session 6: Admin management. The Admin router does NOT
-// own /admin/bookings or /admin/transactions.
+// ==========================================
+// SESSION 6: ADMIN MANAGEMENT
+// ==========================================
+
 mountOnly(
   "/api/admin",
   createAdminRouter({
@@ -577,13 +704,29 @@ mountOnly(
     verifyAdmin,
   }),
   (method, path) =>
-    (method === "GET" && ["/stats", "/services", "/users"].includes(path)) ||
-    (method === "PATCH" &&
-      (/^\/services\/[^/]+\/approval$/.test(path) ||
-        /^\/users\/[^/]+\/role$/.test(path)))
+    (
+      method === "GET" &&
+      [
+        "/stats",
+        "/services",
+        "/users",
+      ].includes(path)
+    ) ||
+    (
+      method === "PATCH" &&
+      (
+        /^\/services\/[^/]+\/approval$/.test(
+          path
+        ) ||
+        /^\/users\/[^/]+\/role$/.test(path)
+      )
+    )
 );
 
-// Session 7: booking requests and admin booking read-only.
+// ==========================================
+// SESSION 7: BOOKING MANAGEMENT
+// ==========================================
+
 mountOnly(
   "/api",
   createBookingRouter({
@@ -595,16 +738,35 @@ mountOnly(
     verifyAdmin,
   }),
   (method, path) =>
-    (method === "POST" && path === "/bookings") ||
-    (method === "GET" &&
-      ["/customer/bookings", "/technician/requests", "/admin/bookings"].includes(path)) ||
-    (method === "PATCH" &&
-      (/^\/bookings\/[^/]+\/cancel$/.test(path) ||
-        /^\/technician\/requests\/[^/]+\/status$/.test(path)))
+    (
+      method === "POST" &&
+      path === "/bookings"
+    ) ||
+    (
+      method === "GET" &&
+      [
+        "/customer/bookings",
+        "/technician/requests",
+        "/admin/bookings",
+      ].includes(path)
+    ) ||
+    (
+      method === "PATCH" &&
+      (
+        /^\/bookings\/[^/]+\/cancel$/.test(
+          path
+        ) ||
+        /^\/technician\/requests\/[^/]+\/status$/.test(
+          path
+        )
+      )
+    )
 );
 
-// Session 8: Stripe payment APIs, Customer history and
-// Admin transactions; other requests skip this router.
+// ==========================================
+// SESSION 8: STRIPE PAYMENT MANAGEMENT
+// ==========================================
+
 mountOnly(
   "/api",
   createPaymentRouter({
@@ -615,12 +777,24 @@ mountOnly(
     verifyAdmin,
   }),
   (method, path) =>
-    (method === "POST" && path === "/payments/create-checkout-session") ||
-    (method === "GET" &&
-      ["/payments/verify", "/customer/payments", "/admin/transactions"].includes(path))
+    (
+      method === "POST" &&
+      path === "/payments/create-checkout-session"
+    ) ||
+    (
+      method === "GET" &&
+      [
+        "/payments/verify",
+        "/customer/payments",
+        "/admin/transactions",
+      ].includes(path)
+    )
 );
 
-// Session 9: user profile and ImgBB upload.
+// ==========================================
+// SESSION 9: PROFILE MANAGEMENT
+// ==========================================
+
 mountOnly(
   "/api",
   createProfileRouter({
@@ -628,8 +802,14 @@ mountOnly(
     verifyToken,
   }),
   (method, path) =>
-    (["GET", "PATCH"].includes(method) && path === "/profile") ||
-    (method === "POST" && path === "/profile/image")
+    (
+      ["GET", "PATCH"].includes(method) &&
+      path === "/profile"
+    ) ||
+    (
+      method === "POST" &&
+      path === "/profile/image"
+    )
 );
 
 // ==========================================
@@ -648,10 +828,7 @@ app.use((req, res) => {
 // ==========================================
 
 app.use((error, req, res, next) => {
-  console.error(
-    "Server error:",
-    error
-  );
+  console.error("Server error:", error);
 
   if (res.headersSent) {
     return next(error);
@@ -670,14 +847,12 @@ app.use((error, req, res, next) => {
 async function run() {
   try {
     // ======================================
-    // CONNECT DATABASE
+    // CONNECT TO MONGODB
     // ======================================
 
     await client.connect();
 
-    await database.command({
-      ping: 1,
-    });
+    await database.command({ ping: 1 });
 
     console.log(
       "Successfully connected to MongoDB!"
@@ -689,7 +864,7 @@ async function run() {
     );
 
     // ======================================
-    // EXISTING SERVICE INDEXES
+    // SERVICES INDEXES
     // ======================================
 
     await servicesCollection.createIndex({
@@ -708,7 +883,7 @@ async function run() {
     });
 
     // ======================================
-    // SESSION 7: BOOKING INDEXES
+    // BOOKING INDEXES
     // ======================================
 
     await createBookingIndexes(
@@ -720,8 +895,7 @@ async function run() {
     );
 
     // ======================================
-    // SESSION 8: PAYMENT INDEXES
-    // STEP 5.4
+    // PAYMENT INDEXES
     // ======================================
 
     await createPaymentIndexes(
@@ -744,7 +918,7 @@ async function run() {
   } catch (error) {
     console.error(
       "Server startup error:",
-      error.message
+      error
     );
 
     await client.close().catch(console.error);
