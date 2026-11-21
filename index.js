@@ -15,12 +15,13 @@ import {
 } from "./routes/admin.js";
 
 import {
+  createPaymentRouter,
+  createPaymentIndexes,
+} from "./routes/payments.js";
+
+import {
   createAuthMiddlewares,
 } from "./middleware/auth.js";
-
-// ==========================================
-// SESSION 7: BOOKING ROUTES
-// ==========================================
 
 import {
   createBookingRouter,
@@ -84,7 +85,7 @@ const database = client.db(
 // MONGODB COLLECTIONS
 // ==========================================
 
-// Better Auth users collection.
+// Better Auth users.
 const usersCollection =
   database.collection("user");
 
@@ -96,9 +97,12 @@ const servicesCollection =
 const bookingsCollection =
   database.collection("bookings");
 
-// Session 8: Stripe payments (later).
-// const paymentsCollection =
-//   database.collection("payments");
+// ==========================================
+// SESSION 8: STRIPE PAYMENTS COLLECTION
+// ==========================================
+
+const paymentsCollection =
+  database.collection("payments");
 
 // ==========================================
 // JWT AUTHENTICATION MIDDLEWARES
@@ -114,8 +118,32 @@ const {
 );
 
 // ==========================================
-// ADMIN MANAGEMENT ROUTES
-// SESSION 6
+// SESSION 8: STRIPE PAYMENT ROUTES
+// STEP 5.3
+// ==========================================
+//
+// POST /api/payments/create-checkout-session
+// GET  /api/payments/verify
+// GET  /api/customer/payments
+// GET  /api/admin/transactions
+//
+// Register before the existing Admin router
+// to avoid any possible route conflict.
+// ==========================================
+
+app.use(
+  "/api",
+  createPaymentRouter({
+    bookingsCollection,
+    paymentsCollection,
+    verifyToken,
+    verifyCustomer,
+    verifyAdmin,
+  })
+);
+
+// ==========================================
+// SESSION 6: ADMIN MANAGEMENT ROUTES
 // ==========================================
 
 app.use(
@@ -129,8 +157,7 @@ app.use(
 );
 
 // ==========================================
-// TECHNICIAN SERVICE MANAGEMENT ROUTES
-// SESSION 5
+// SESSION 5: TECHNICIAN SERVICES
 // ==========================================
 
 app.use(
@@ -143,19 +170,15 @@ app.use(
 );
 
 // ==========================================
-// SESSION 7: BOOKING MANAGEMENT ROUTES
-// STEP 3.3
+// SESSION 7: BOOKING MANAGEMENT
 // ==========================================
 //
-// Handles:
 // POST  /api/bookings
 // GET   /api/customer/bookings
 // PATCH /api/bookings/:id/cancel
 // GET   /api/technician/requests
 // PATCH /api/technician/requests/:id/status
 // GET   /api/admin/bookings
-//
-// Uses existing JWT role verification.
 // ==========================================
 
 app.use(
@@ -661,7 +684,6 @@ async function run() {
 
     // ======================================
     // SESSION 7: BOOKING INDEXES
-    // STEP 3.4
     // ======================================
 
     await createBookingIndexes(
@@ -670,6 +692,19 @@ async function run() {
 
     console.log(
       "Booking indexes are ready"
+    );
+
+    // ======================================
+    // SESSION 8: PAYMENT INDEXES
+    // STEP 5.4
+    // ======================================
+
+    await createPaymentIndexes(
+      paymentsCollection
+    );
+
+    console.log(
+      "Payment indexes are ready"
     );
 
     // ======================================
@@ -683,9 +718,11 @@ async function run() {
     });
   } catch (error) {
     console.error(
-      "MongoDB connection error:",
+      "Server startup error:",
       error.message
     );
+
+    await client.close().catch(console.error);
 
     process.exit(1);
   }
