@@ -19,6 +19,15 @@ import {
 } from "./middleware/auth.js";
 
 // ==========================================
+// SESSION 7: BOOKING ROUTES
+// ==========================================
+
+import {
+  createBookingRouter,
+  createBookingIndexes,
+} from "./routes/bookings.js";
+
+// ==========================================
 // EXPRESS SETUP
 // ==========================================
 
@@ -60,8 +69,7 @@ if (!uri) {
   process.exit(1);
 }
 
-// The DNS workaround previously needed
-// for your MongoDB Atlas connection.
+// MongoDB Atlas DNS workaround.
 dns.setServers(["1.1.1.1"]);
 
 // Create MongoDB client.
@@ -76,7 +84,7 @@ const database = client.db(
 // MONGODB COLLECTIONS
 // ==========================================
 
-// Better Auth's user collection.
+// Better Auth users collection.
 const usersCollection =
   database.collection("user");
 
@@ -84,11 +92,11 @@ const usersCollection =
 const servicesCollection =
   database.collection("services");
 
-// These collections will be used when
-// implementing bookings and payments.
-// const bookingsCollection =
-//   database.collection("bookings");
+// Session 7: Customer repair bookings.
+const bookingsCollection =
+  database.collection("bookings");
 
+// Session 8: Stripe payments (later).
 // const paymentsCollection =
 //   database.collection("payments");
 
@@ -107,6 +115,7 @@ const {
 
 // ==========================================
 // ADMIN MANAGEMENT ROUTES
+// SESSION 6
 // ==========================================
 
 app.use(
@@ -121,6 +130,7 @@ app.use(
 
 // ==========================================
 // TECHNICIAN SERVICE MANAGEMENT ROUTES
+// SESSION 5
 // ==========================================
 
 app.use(
@@ -129,6 +139,34 @@ app.use(
     servicesCollection,
     verifyToken,
     verifyTechnician,
+  })
+);
+
+// ==========================================
+// SESSION 7: BOOKING MANAGEMENT ROUTES
+// STEP 3.3
+// ==========================================
+//
+// Handles:
+// POST  /api/bookings
+// GET   /api/customer/bookings
+// PATCH /api/bookings/:id/cancel
+// GET   /api/technician/requests
+// PATCH /api/technician/requests/:id/status
+// GET   /api/admin/bookings
+//
+// Uses existing JWT role verification.
+// ==========================================
+
+app.use(
+  "/api",
+  createBookingRouter({
+    bookingsCollection,
+    servicesCollection,
+    verifyToken,
+    verifyCustomer,
+    verifyTechnician,
+    verifyAdmin,
   })
 );
 
@@ -159,8 +197,7 @@ const serviceModes = [
 // HELPER FUNCTIONS
 // ==========================================
 
-// Escape special characters in search
-// text before creating a MongoDB regex.
+// Escape special characters in search text.
 const escapeRegex = (text) => {
   return text.replace(
     /[.*+?^${}()|[\]\\]/g,
@@ -168,8 +205,7 @@ const escapeRegex = (text) => {
   );
 };
 
-// Convert MongoDB ObjectId to a string
-// for the Next.js frontend.
+// Convert MongoDB ObjectId to string.
 const formatService = (service) => {
   return {
     ...service,
@@ -182,9 +218,7 @@ const formatService = (service) => {
 // ==========================================
 
 app.get("/", (req, res) => {
-  res.send(
-    "FixMate server is running!"
-  );
+  res.send("FixMate server is running!");
 });
 
 // ==========================================
@@ -228,8 +262,7 @@ app.get("/api/health", async (req, res) => {
 // sort
 // limit
 //
-// Only approved and available services
-// can appear publicly.
+// Only approved and available services.
 // ==========================================
 
 app.get("/api/services", async (req, res) => {
@@ -242,10 +275,7 @@ app.get("/api/services", async (req, res) => {
       limit,
     } = req.query;
 
-    // ======================================
-    // VALIDATE QUERY PARAMETERS
-    // ======================================
-
+    // Validate query parameters.
     if (
       typeof search !== "string" ||
       typeof category !== "string" ||
@@ -291,28 +321,20 @@ app.get("/api/services", async (req, res) => {
       "price-desc",
     ];
 
-    if (
-      !allowedSortOptions.includes(sort)
-    ) {
+    if (!allowedSortOptions.includes(sort)) {
       return res.status(400).send({
         success: false,
         message: "Invalid sort option",
       });
     }
 
-    // ======================================
-    // PUBLIC SERVICE VISIBILITY
-    // ======================================
-
+    // Only public approved services.
     const query = {
       approvalStatus: "approved",
       isAvailable: true,
     };
 
-    // ======================================
-    // SEARCH BY TITLE OR CATEGORY
-    // ======================================
-
+    // Search title or category.
     if (search.trim()) {
       const safeSearch = escapeRegex(
         search.trim()
@@ -334,26 +356,17 @@ app.get("/api/services", async (req, res) => {
       ];
     }
 
-    // ======================================
-    // CATEGORY FILTER
-    // ======================================
-
+    // Category filter.
     if (category) {
       query.category = category;
     }
 
-    // ======================================
-    // SERVICE MODE FILTER
-    // ======================================
-
+    // Service mode filter.
     if (serviceMode) {
       query.serviceMode = serviceMode;
     }
 
-    // ======================================
-    // SORTING
-    // ======================================
-
+    // MongoDB sorting.
     let sortOptions = {
       createdAt: -1,
       _id: -1,
@@ -373,18 +386,11 @@ app.get("/api/services", async (req, res) => {
       };
     }
 
-    // ======================================
-    // MONGODB QUERY
-    // ======================================
-
     let cursor = servicesCollection
       .find(query)
       .sort(sortOptions);
 
-    // ======================================
-    // OPTIONAL RESULT LIMIT
-    // ======================================
-
+    // Optional result limit.
     if (limit !== undefined) {
       if (typeof limit !== "string") {
         return res.status(400).send({
@@ -407,17 +413,10 @@ app.get("/api/services", async (req, res) => {
         });
       }
 
-      cursor = cursor.limit(
-        parsedLimit
-      );
+      cursor = cursor.limit(parsedLimit);
     }
 
-    // ======================================
-    // FETCH SERVICES
-    // ======================================
-
-    const result =
-      await cursor.toArray();
+    const result = await cursor.toArray();
 
     return res.status(200).send(
       result.map(formatService)
@@ -440,8 +439,6 @@ app.get("/api/services", async (req, res) => {
 // ==========================================
 //
 // GET /api/services/:id
-//
-// Approved and available services only.
 // ==========================================
 
 app.get(
@@ -449,10 +446,6 @@ app.get(
   async (req, res) => {
     try {
       const id = req.params.id;
-
-      // ====================================
-      // VALIDATE OBJECT ID
-      // ====================================
 
       if (
         typeof id !== "string" ||
@@ -463,10 +456,6 @@ app.get(
           message: "Service not found",
         });
       }
-
-      // ====================================
-      // FIND APPROVED SERVICE
-      // ====================================
 
       const query = {
         _id: new ObjectId(id),
@@ -486,10 +475,7 @@ app.get(
         });
       }
 
-      // ====================================
-      // TECHNICIAN PUBLIC PROFILE
-      // ====================================
-
+      // Find public technician profile.
       const technician =
         await usersCollection.findOne(
           {
@@ -532,8 +518,6 @@ app.get(
 // ==========================================
 //
 // GET /api/auth/me
-//
-// Requires a valid JWT.
 // ==========================================
 
 app.get(
@@ -552,13 +536,6 @@ app.get(
 // ==========================================
 // CUSTOMER-ONLY TEST API
 // ==========================================
-//
-// GET /api/test/customer
-//
-// Requires:
-// verifyToken
-// verifyCustomer
-// ==========================================
 
 app.get(
   "/api/test/customer",
@@ -567,8 +544,7 @@ app.get(
   (req, res) => {
     return res.status(200).send({
       success: true,
-      message:
-        "Customer access granted",
+      message: "Customer access granted",
       user: req.user,
     });
   }
@@ -576,13 +552,6 @@ app.get(
 
 // ==========================================
 // TECHNICIAN-ONLY TEST API
-// ==========================================
-//
-// GET /api/test/technician
-//
-// Requires:
-// verifyToken
-// verifyTechnician
 // ==========================================
 
 app.get(
@@ -592,8 +561,7 @@ app.get(
   (req, res) => {
     return res.status(200).send({
       success: true,
-      message:
-        "Technician access granted",
+      message: "Technician access granted",
       user: req.user,
     });
   }
@@ -601,13 +569,6 @@ app.get(
 
 // ==========================================
 // ADMIN-ONLY TEST API
-// ==========================================
-//
-// GET /api/test/admin
-//
-// Requires:
-// verifyToken
-// verifyAdmin
 // ==========================================
 
 app.get(
@@ -617,15 +578,14 @@ app.get(
   (req, res) => {
     return res.status(200).send({
       success: true,
-      message:
-        "Admin access granted",
+      message: "Admin access granted",
       user: req.user,
     });
   }
 );
 
 // ==========================================
-// UNKNOWN ROUTES
+// UNKNOWN API ROUTES
 // ==========================================
 
 app.use((req, res) => {
@@ -667,7 +627,6 @@ async function run() {
 
     await client.connect();
 
-    // Check MongoDB connection.
     await database.command({
       ping: 1,
     });
@@ -682,7 +641,7 @@ async function run() {
     );
 
     // ======================================
-    // MONGODB INDEXES
+    // EXISTING SERVICE INDEXES
     // ======================================
 
     await servicesCollection.createIndex({
@@ -699,6 +658,19 @@ async function run() {
     await servicesCollection.createIndex({
       technicianEmail: 1,
     });
+
+    // ======================================
+    // SESSION 7: BOOKING INDEXES
+    // STEP 3.4
+    // ======================================
+
+    await createBookingIndexes(
+      bookingsCollection
+    );
+
+    console.log(
+      "Booking indexes are ready"
+    );
 
     // ======================================
     // START EXPRESS SERVER
