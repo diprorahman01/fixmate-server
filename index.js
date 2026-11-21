@@ -7,6 +7,10 @@ import dns from "node:dns";
 import { MongoClient, ObjectId } from "mongodb";
 
 import {
+  createServiceRouter,
+} from "./routes/services.js";
+
+import {
   createAuthMiddlewares,
 } from "./middleware/auth.js";
 
@@ -95,6 +99,19 @@ const {
   verifyAdmin,
 } = createAuthMiddlewares(
   usersCollection
+);
+
+// ==========================================
+// TECHNICIAN SERVICE MANAGEMENT ROUTES
+// ==========================================
+
+app.use(
+  "/api",
+  createServiceRouter({
+    servicesCollection,
+    verifyToken,
+    verifyTechnician,
+  })
 );
 
 // ==========================================
