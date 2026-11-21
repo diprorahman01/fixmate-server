@@ -5,6 +5,7 @@ import "dotenv/config";
 import dns from "node:dns";
 
 import { MongoClient, ObjectId } from "mongodb";
+import { createProfileRouter } from "./routes/profile.js";
 
 import {
   createServiceRouter,
@@ -40,7 +41,9 @@ const port = process.env.PORT || 5000;
 // EXPRESS MIDDLEWARES
 // ==========================================
 
-app.use(express.json());
+// Session 9 profile photo uploads use
+// base64 JSON (up to 5 MB decoded).
+app.use(express.json({ limit: "10mb" }));
 
 const allowedOrigins = (
   process.env.CLIENT_URL || "http://localhost:3000"
@@ -115,82 +118,6 @@ const {
   verifyAdmin,
 } = createAuthMiddlewares(
   usersCollection
-);
-
-// ==========================================
-// SESSION 8: STRIPE PAYMENT ROUTES
-// STEP 5.3
-// ==========================================
-//
-// POST /api/payments/create-checkout-session
-// GET  /api/payments/verify
-// GET  /api/customer/payments
-// GET  /api/admin/transactions
-//
-// Register before the existing Admin router
-// to avoid any possible route conflict.
-// ==========================================
-
-app.use(
-  "/api",
-  createPaymentRouter({
-    bookingsCollection,
-    paymentsCollection,
-    verifyToken,
-    verifyCustomer,
-    verifyAdmin,
-  })
-);
-
-// ==========================================
-// SESSION 6: ADMIN MANAGEMENT ROUTES
-// ==========================================
-
-app.use(
-  "/api/admin",
-  createAdminRouter({
-    usersCollection,
-    servicesCollection,
-    verifyToken,
-    verifyAdmin,
-  })
-);
-
-// ==========================================
-// SESSION 5: TECHNICIAN SERVICES
-// ==========================================
-
-app.use(
-  "/api",
-  createServiceRouter({
-    servicesCollection,
-    verifyToken,
-    verifyTechnician,
-  })
-);
-
-// ==========================================
-// SESSION 7: BOOKING MANAGEMENT
-// ==========================================
-//
-// POST  /api/bookings
-// GET   /api/customer/bookings
-// PATCH /api/bookings/:id/cancel
-// GET   /api/technician/requests
-// PATCH /api/technician/requests/:id/status
-// GET   /api/admin/bookings
-// ==========================================
-
-app.use(
-  "/api",
-  createBookingRouter({
-    bookingsCollection,
-    servicesCollection,
-    verifyToken,
-    verifyCustomer,
-    verifyTechnician,
-    verifyAdmin,
-  })
 );
 
 // ==========================================
@@ -608,6 +535,96 @@ app.get(
 );
 
 // ==========================================
+// PROTECTED ROUTERS
+// ==========================================
+//
+// IMPORTANT:
+//
+// All public endpoints above must be
+// registered BEFORE these protected routers.
+//
+// Some existing routers use:
+//
+// router.use(verifyToken);
+//
+// If registered before /api/health or
+// /api/services, they incorrectly block
+// public requests and return HTTP 401.
+//
+// The following routes stay protected.
+// ==========================================
+
+// ==========================================
+// SESSION 5: TECHNICIAN SERVICES
+// ==========================================
+
+app.use(
+  "/api",
+  createServiceRouter({
+    servicesCollection,
+    verifyToken,
+    verifyTechnician,
+  })
+);
+
+// ==========================================
+// SESSION 6: ADMIN MANAGEMENT
+// ==========================================
+
+app.use(
+  "/api/admin",
+  createAdminRouter({
+    usersCollection,
+    servicesCollection,
+    verifyToken,
+    verifyAdmin,
+  })
+);
+
+// ==========================================
+// SESSION 7: BOOKING MANAGEMENT
+// ==========================================
+
+app.use(
+  "/api",
+  createBookingRouter({
+    bookingsCollection,
+    servicesCollection,
+    verifyToken,
+    verifyCustomer,
+    verifyTechnician,
+    verifyAdmin,
+  })
+);
+
+// ==========================================
+// SESSION 8: STRIPE PAYMENTS
+// ==========================================
+
+app.use(
+  "/api",
+  createPaymentRouter({
+    bookingsCollection,
+    paymentsCollection,
+    verifyToken,
+    verifyCustomer,
+    verifyAdmin,
+  })
+);
+
+// ==========================================
+// SESSION 9: PROFILE MANAGEMENT
+// ==========================================
+
+app.use(
+  "/api",
+  createProfileRouter({
+    usersCollection,
+    verifyToken,
+  })
+);
+
+// ==========================================
 // UNKNOWN API ROUTES
 // ==========================================
 
@@ -696,7 +713,6 @@ async function run() {
 
     // ======================================
     // SESSION 8: PAYMENT INDEXES
-    // STEP 5.4
     // ======================================
 
     await createPaymentIndexes(
