@@ -6,6 +6,11 @@ import Stripe from "stripe";
 
 // ==========================================
 // FIXMATE STRIPE PAYMENT MANAGEMENT
+// SESSION 8
+// ==========================================
+
+// ==========================================
+// HELPER FUNCTIONS
 // ==========================================
 
 const isValidId = (id) =>
@@ -41,6 +46,10 @@ const CLIENT_URL = (
 
 const CURRENCY = "usd";
 
+// Stripe automatically selects enabled
+// payment methods from Stripe Dashboard.
+// Do not use payment_method_types.
+
 // ==========================================
 // DATABASE INDEXES
 // ==========================================
@@ -48,7 +57,7 @@ const CURRENCY = "usd";
 export async function createPaymentIndexes(
   paymentsCollection
 ) {
-  // Only one payment document per booking.
+  // Prevent multiple payments per booking.
   await paymentsCollection.createIndex(
     { bookingId: 1 },
     {
@@ -57,7 +66,7 @@ export async function createPaymentIndexes(
     }
   );
 
-  // Stripe transaction IDs must be unique.
+  // Prevent duplicate Stripe transactions.
   await paymentsCollection.createIndex(
     { transactionId: 1 },
     {
@@ -66,7 +75,7 @@ export async function createPaymentIndexes(
     }
   );
 
-  // Checkout session IDs must be unique.
+  // Prevent duplicate Checkout sessions.
   await paymentsCollection.createIndex(
     { sessionId: 1 },
     {
@@ -75,6 +84,7 @@ export async function createPaymentIndexes(
     }
   );
 
+  // Customer payment history.
   await paymentsCollection.createIndex({
     customerEmail: 1,
     paidAt: -1,
@@ -94,11 +104,11 @@ export function createPaymentRouter({
 }) {
   const router = Router();
 
-  // JWT is required for every endpoint.
+  // Require authentication for every route.
   router.use(verifyToken);
 
   // ========================================
-  // FINALIZE A VERIFIED STRIPE PAYMENT
+  // RECORD VERIFIED STRIPE PAYMENT
   // ========================================
 
   async function recordPaidSession(
@@ -107,7 +117,7 @@ export function createPaymentRouter({
   ) {
     const bookingId = booking._id.toString();
 
-    // Stripe must confirm the payment.
+    // Stripe must confirm payment.
     if (
       session.mode !== "payment" ||
       session.payment_status !== "paid"
@@ -117,7 +127,8 @@ export function createPaymentRouter({
       );
     }
 
-    // Never trust the amount from the client.
+    // Payment amount always comes from
+    // the saved MongoDB booking.
     const expectedAmount = Math.round(
       Number(booking.finalAmount) * 100
     );
@@ -129,7 +140,8 @@ export function createPaymentRouter({
         ? session.payment_intent
         : session.payment_intent?.id;
 
-    // Verify all important payment details.
+    // Verify the Stripe session belongs
+    // to the correct booking and customer.
     if (
       !paymentIntentId ||
       !Number.isSafeInteger(expectedAmount) ||
@@ -165,11 +177,6 @@ export function createPaymentRouter({
     // ======================================
     // PREVENT DUPLICATE PAYMENT RECORDS
     // ======================================
-    //
-    // If two verification requests arrive
-    // simultaneously, MongoDB's unique
-    // indexes allow only one payment record.
-    // ======================================
 
     let newlyRecorded = false;
 
@@ -188,14 +195,14 @@ export function createPaymentRouter({
       newlyRecorded =
         result.upsertedCount === 1;
     } catch (error) {
-      // Another verification request may
-      // have inserted the same payment.
+      // A concurrent verification may have
+      // already inserted the same payment.
       if (error.code !== 11000) {
         throw error;
       }
     }
 
-    // Retrieve the saved record.
+    // Retrieve the stored payment record.
     const saved =
       await paymentsCollection.findOne({
         bookingId,
@@ -207,8 +214,8 @@ export function createPaymentRouter({
       );
     }
 
-    // A repeated verification must refer
-    // to exactly the same Stripe payment.
+    // Repeated verification must reference
+    // the exact same transaction.
     if (
       saved.transactionId !== paymentIntentId ||
       saved.sessionId !== session.id ||
@@ -222,13 +229,7 @@ export function createPaymentRouter({
     }
 
     // ======================================
-    // MARK BOOKING AS PAID
-    // ======================================
-    //
-    // This update is safe to repeat.
-    // If payment insertion worked but the
-    // booking update previously failed,
-    // another verification can repair it.
+    // UPDATE BOOKING PAYMENT STATUS
     // ======================================
 
     await bookingsCollection.updateOne(
@@ -258,8 +259,13 @@ export function createPaymentRouter({
   // ========================================
   //
   // POST /api/payments/create-checkout-session
-  // Body: { bookingId }
-  // Customer only
+  //
+  // Body:
+  // {
+  //   bookingId: "MongoDB ObjectId"
+  // }
+  //
+  // Customer only.
   // ========================================
 
   router.post(
@@ -272,6 +278,7 @@ export function createPaymentRouter({
       try {
         const { bookingId } = req.body ?? {};
 
+        // Validate booking ID.
         if (!isValidId(bookingId)) {
           return res.status(400).send({
             success: false,
@@ -279,7 +286,7 @@ export function createPaymentRouter({
           });
         }
 
-        // Load only this customer's booking.
+        // Load this customer's booking.
         const booking =
           await bookingsCollection.findOne({
             _id: new ObjectId(bookingId),
@@ -293,8 +300,8 @@ export function createPaymentRouter({
           });
         }
 
-        // Payment is allowed only after
-        // the technician completes the job.
+        // Payment is only allowed when
+        // the repair is completed.
         if (booking.status !== "completed") {
           return res.status(409).send({
             success: false,
@@ -303,6 +310,7 @@ export function createPaymentRouter({
           });
         }
 
+        // Already paid bookings cannot pay again.
         if (booking.paymentStatus === "paid") {
           return res.status(409).send({
             success: false,
@@ -310,7 +318,8 @@ export function createPaymentRouter({
           });
         }
 
-        // Amount comes from MongoDB only.
+        // Convert USD amount into cents.
+        // Never trust an amount from the frontend.
         const amount = Math.round(
           Number(booking.finalAmount) * 100
         );
@@ -328,7 +337,11 @@ export function createPaymentRouter({
         }
 
         // ==================================
-        // CHECKOUT CREATION LOCK
+        // CHECKOUT LOCK
+        // ==================================
+        //
+        // Prevent simultaneous requests
+        // from creating duplicate sessions.
         // ==================================
 
         lockToken = randomUUID();
@@ -380,7 +393,7 @@ export function createPaymentRouter({
 
         lockedId = booking._id;
 
-        // Refresh after acquiring the lock.
+        // Reload booking after locking.
         const currentBooking =
           await bookingsCollection.findOne({
             _id: booking._id,
@@ -403,6 +416,7 @@ export function createPaymentRouter({
               currentBooking.checkoutSessionId
             );
 
+          // Previous session was already paid.
           if (previous.payment_status === "paid") {
             await recordPaidSession(
               previous,
@@ -416,12 +430,12 @@ export function createPaymentRouter({
             });
           }
 
-          // Reuse an open session.
+          // Reuse an existing open session.
           if (
             previous.status === "open" &&
             previous.url
           ) {
-            return res.send({
+            return res.status(200).send({
               success: true,
               url: previous.url,
             });
@@ -431,15 +445,18 @@ export function createPaymentRouter({
         // ==================================
         // CREATE NEW STRIPE CHECKOUT
         // ==================================
+        //
+        // FIX:
+        // Removed payment_method_types.
+        //
+        // Stripe selects payment methods
+        // from the Stripe Dashboard.
+        // ==================================
 
         const session =
           await stripe.checkout.sessions.create(
             {
               mode: "payment",
-
-              payment_method_types: [
-                "card",
-              ],
 
               client_reference_id: bookingId,
 
@@ -489,7 +506,7 @@ export function createPaymentRouter({
         }
 
         // ==================================
-        // SAVE CHECKOUT SESSION
+        // SAVE STRIPE SESSION IN MONGODB
         // ==================================
 
         const savedSession =
@@ -513,7 +530,7 @@ export function createPaymentRouter({
           );
         }
 
-        return res.send({
+        return res.status(200).send({
           success: true,
           url: session.url,
         });
@@ -529,7 +546,7 @@ export function createPaymentRouter({
             "Unable to create Stripe Checkout",
         });
       } finally {
-        // Release only this request's lock.
+        // Release only our checkout lock.
         if (lockedId && lockToken) {
           try {
             await bookingsCollection.updateOne(
@@ -560,7 +577,8 @@ export function createPaymentRouter({
   // ========================================
   //
   // GET /api/payments/verify?session_id=...
-  // Customer only
+  //
+  // Customer only.
   // ========================================
 
   router.get(
@@ -581,8 +599,8 @@ export function createPaymentRouter({
           });
         }
 
-        // Retrieve payment status directly
-        // from Stripe.
+        // Retrieve actual payment details
+        // directly from Stripe.
         const session =
           await stripe.checkout.sessions.retrieve(
             sessionId
@@ -599,7 +617,7 @@ export function createPaymentRouter({
           });
         }
 
-        // Check authenticated ownership.
+        // Customer must own the booking.
         const booking =
           await bookingsCollection.findOne({
             _id: new ObjectId(bookingId),
@@ -614,7 +632,8 @@ export function createPaymentRouter({
           });
         }
 
-        // Checkout must match this booking.
+        // Stripe session must match
+        // the booking stored in MongoDB.
         if (
           booking.checkoutSessionId !==
           session.id
@@ -626,8 +645,7 @@ export function createPaymentRouter({
           });
         }
 
-        // Never mark unpaid Stripe sessions
-        // as paid.
+        // Only verified successful payments.
         if (
           session.payment_status !== "paid"
         ) {
@@ -638,7 +656,7 @@ export function createPaymentRouter({
           });
         }
 
-        // Save once, update booking.
+        // Record payment and update booking.
         const payment =
           await recordPaidSession(
             session,
@@ -671,7 +689,6 @@ export function createPaymentRouter({
   // ========================================
   //
   // GET /api/customer/payments
-  // Customer only
   // ========================================
 
   router.get(
@@ -712,7 +729,6 @@ export function createPaymentRouter({
   // ========================================
   //
   // GET /api/admin/transactions
-  // Admin only
   // ========================================
 
   router.get(
@@ -756,10 +772,5 @@ export function createPaymentRouter({
       }
     }
   );
-
-  // ========================================
-  // RETURN PAYMENT ROUTER
-  // ========================================
-
   return router;
 }
