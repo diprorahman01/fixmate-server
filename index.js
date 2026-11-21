@@ -41,8 +41,7 @@ const port = process.env.PORT || 5000;
 // EXPRESS MIDDLEWARES
 // ==========================================
 
-// Session 9 profile photo uploads use
-// base64 JSON (up to 5 MB decoded).
+// Session 9 profile photo uploads use base64 JSON (up to 5 MB decoded).
 app.use(express.json({ limit: "10mb" }));
 
 const allowedOrigins = (
@@ -535,57 +534,57 @@ app.get(
 );
 
 // ==========================================
-// PROTECTED ROUTERS
+// PROTECTED ROUTERS — EXACT ROUTE SCOPING
 // ==========================================
-//
-// IMPORTANT:
-//
-// All public endpoints above must be
-// registered BEFORE these protected routers.
-//
-// Some existing routers use:
-//
-// router.use(verifyToken);
-//
-// If registered before /api/health or
-// /api/services, they incorrectly block
-// public requests and return HTTP 401.
-//
-// The following routes stay protected.
-// ==========================================
+// These routers contain router.use(verifyToken) and some
+// also router.use(verifyTechnician / verifyAdmin).
+// A router mounted on all /api paths otherwise rejects
+// unrelated requests before the next router can run.
+// Only pass the router its own supported path + method.
 
-// ==========================================
-// SESSION 5: TECHNICIAN SERVICES
-// ==========================================
+function mountOnly(base, router, accepts) {
+  app.use(base, (req, res, next) => {
+    if (!accepts(req.method, req.path)) {
+      return next();
+    }
+    return router(req, res, next);
+  });
+}
 
-app.use(
+// Session 5: technician service operations.
+mountOnly(
   "/api",
   createServiceRouter({
     servicesCollection,
     verifyToken,
     verifyTechnician,
-  })
+  }),
+  (method, path) =>
+    (method === "GET" && /^\/technician\/services(?:\/[^/]+)?$/.test(path)) ||
+    (method === "POST" && path === "/services") ||
+    (["PATCH", "DELETE"].includes(method) &&
+      /^\/services\/[^/]+(?:\/availability)?$/.test(path))
 );
 
-// ==========================================
-// SESSION 6: ADMIN MANAGEMENT
-// ==========================================
-
-app.use(
+// Session 6: Admin management. The Admin router does NOT
+// own /admin/bookings or /admin/transactions.
+mountOnly(
   "/api/admin",
   createAdminRouter({
     usersCollection,
     servicesCollection,
     verifyToken,
     verifyAdmin,
-  })
+  }),
+  (method, path) =>
+    (method === "GET" && ["/stats", "/services", "/users"].includes(path)) ||
+    (method === "PATCH" &&
+      (/^\/services\/[^/]+\/approval$/.test(path) ||
+        /^\/users\/[^/]+\/role$/.test(path)))
 );
 
-// ==========================================
-// SESSION 7: BOOKING MANAGEMENT
-// ==========================================
-
-app.use(
+// Session 7: booking requests and admin booking read-only.
+mountOnly(
   "/api",
   createBookingRouter({
     bookingsCollection,
@@ -594,14 +593,19 @@ app.use(
     verifyCustomer,
     verifyTechnician,
     verifyAdmin,
-  })
+  }),
+  (method, path) =>
+    (method === "POST" && path === "/bookings") ||
+    (method === "GET" &&
+      ["/customer/bookings", "/technician/requests", "/admin/bookings"].includes(path)) ||
+    (method === "PATCH" &&
+      (/^\/bookings\/[^/]+\/cancel$/.test(path) ||
+        /^\/technician\/requests\/[^/]+\/status$/.test(path)))
 );
 
-// ==========================================
-// SESSION 8: STRIPE PAYMENTS
-// ==========================================
-
-app.use(
+// Session 8: Stripe payment APIs, Customer history and
+// Admin transactions; other requests skip this router.
+mountOnly(
   "/api",
   createPaymentRouter({
     bookingsCollection,
@@ -609,19 +613,23 @@ app.use(
     verifyToken,
     verifyCustomer,
     verifyAdmin,
-  })
+  }),
+  (method, path) =>
+    (method === "POST" && path === "/payments/create-checkout-session") ||
+    (method === "GET" &&
+      ["/payments/verify", "/customer/payments", "/admin/transactions"].includes(path))
 );
 
-// ==========================================
-// SESSION 9: PROFILE MANAGEMENT
-// ==========================================
-
-app.use(
+// Session 9: user profile and ImgBB upload.
+mountOnly(
   "/api",
   createProfileRouter({
     usersCollection,
     verifyToken,
-  })
+  }),
+  (method, path) =>
+    (["GET", "PATCH"].includes(method) && path === "/profile") ||
+    (method === "POST" && path === "/profile/image")
 );
 
 // ==========================================
@@ -713,6 +721,7 @@ async function run() {
 
     // ======================================
     // SESSION 8: PAYMENT INDEXES
+    // STEP 5.4
     // ======================================
 
     await createPaymentIndexes(
